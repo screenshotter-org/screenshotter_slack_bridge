@@ -693,18 +693,18 @@ func TestPreviewIsEnlargedToSlacksMinimum(t *testing.T) {
 }
 
 func TestPreviewIsCappedAtMaxDimension(t *testing.T) {
-	srv := pngServer(t, testPNG(t, 4000, 2000))
+	srv := pngServer(t, testPNG(t, 2000, 1000))
 	defer srv.Close()
 
 	api := &fakeAPI{}
 	cfg := baseConfig(srv.URL)
-	cfg.MaxDimension = 1000
+	cfg.MaxDimension = 600
 	b := newTestBridge(t, api, cfg)
 	b.HandleLinkShared(context.Background(), "T1", linkEvent())
 
 	w, h := previewDims(t, api.adds[0].preview)
-	if w != 1000 || h != 500 {
-		t.Errorf("preview is %dx%d, want 1000x500 (capped, aspect preserved)", w, h)
+	if w != 600 || h != 300 {
+		t.Errorf("preview is %dx%d, want 600x300 (capped, aspect preserved)", w, h)
 	}
 }
 
