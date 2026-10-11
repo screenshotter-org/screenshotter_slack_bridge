@@ -84,8 +84,10 @@ Socket Mode. The bridge assumes the server runs with
 ### Card styles
 
 `card_style` picks how the card looks. The default, `"image"`, shows the whole
-preview under its title, followed by a footer line — an icon and a
-`card_caption` link ("Open in Screenshotter") to the screenshot's page. Slack
+preview under its title, followed by a footer line — an icon, a
+`card_caption` link ("Open in Screenshotter") to the screenshot's page and a
+`card_source_caption` link ("Open source page") to the page it was taken from;
+`""` removes either link, and the footer goes when both are empty. Slack
 fetches that icon, `card_favicon_url`, itself, so it must be a public URL; it
 defaults to the icon on www.screenshotter.org, and `""` removes it. `"file"` shows
 Slack's own file card instead, which crops the preview and puts a file header

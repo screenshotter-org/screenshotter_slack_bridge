@@ -34,7 +34,7 @@ const (
 // publicly reachable, which a (typically private) screenshotter server is not.
 const DefaultCardFaviconURL = "https://www.screenshotter.org/favicon-32x32.png"
 
-// maxCardCaptionLen bounds card_caption, in runes, well inside the 2000
+// maxCardCaptionLen bounds card_caption and card_source_caption, in runes, well inside the 2000
 // characters Slack allows in a context block's text element.
 const maxCardCaptionLen = 150
 
@@ -114,9 +114,16 @@ type Config struct {
 	CardFaviconURL string `toml:"card_favicon_url"`
 
 	// CardCaption is the text of the image card's footer link to the
-	// screenshot's page. Unused by the file style. Default: "Open in
-	// Screenshotter".
+	// screenshot's page. Empty drops that link. Unused by the file style.
+	// Default: "Open in Screenshotter".
 	CardCaption string `toml:"card_caption"`
+
+	// CardSourceCaption is the text of the image card's footer link to the page
+	// the screenshot was taken from, shown when the server reports that page.
+	// Empty drops that link. With both captions empty the image card has no
+	// footer, favicon included. Unused by the file style. Default: "Open
+	// source page".
+	CardSourceCaption string `toml:"card_source_caption"`
 
 	// CardTitleMaxLength caps the card's title, in characters (runes); longer
 	// titles are cut after that many and followed by an ellipsis ("…"). Applies to both styles. Must be
@@ -189,6 +196,7 @@ func Load(path string) (*Config, error) {
 		CardStyle:          CardStyleImage,
 		CardFaviconURL:     DefaultCardFaviconURL,
 		CardCaption:        "Open in Screenshotter",
+		CardSourceCaption:  "Open source page",
 		CardTitleMaxLength: 90,
 		RequestTimeout:     TOMLDuration{30 * time.Second},
 		MaxConcurrency:     50,
@@ -278,11 +286,12 @@ func (c *Config) validate() error {
 		}
 	}
 	c.CardCaption = strings.TrimSpace(c.CardCaption)
-	if c.CardCaption == "" {
-		return fmt.Errorf("card_caption must not be empty")
-	}
 	if utf8.RuneCountInString(c.CardCaption) > maxCardCaptionLen {
 		return fmt.Errorf("card_caption must be at most %d characters", maxCardCaptionLen)
+	}
+	c.CardSourceCaption = strings.TrimSpace(c.CardSourceCaption)
+	if utf8.RuneCountInString(c.CardSourceCaption) > maxCardCaptionLen {
+		return fmt.Errorf("card_source_caption must be at most %d characters", maxCardCaptionLen)
 	}
 	if c.CardTitleMaxLength < 1 || c.CardTitleMaxLength > MaxCardTitleLength {
 		return fmt.Errorf("card_title_max_length must be between 1 and %d", MaxCardTitleLength)

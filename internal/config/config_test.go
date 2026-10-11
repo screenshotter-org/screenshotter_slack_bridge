@@ -91,6 +91,9 @@ app_token = "xapp-app"
 	if cfg.CardCaption != "Open in Screenshotter" {
 		t.Errorf("default card_caption should be \"Open in Screenshotter\", got %q", cfg.CardCaption)
 	}
+	if cfg.CardSourceCaption != "Open source page" {
+		t.Errorf("default card_source_caption should be \"Open source page\", got %q", cfg.CardSourceCaption)
+	}
 	if cfg.CardTitleMaxLength != 90 {
 		t.Errorf("default card_title_max_length should be 90, got %d", cfg.CardTitleMaxLength)
 	}
@@ -110,6 +113,7 @@ func TestLoadCardSettings(t *testing.T) {
 card_style = "file"
 card_favicon_url = ""
 card_caption = "  View screenshot  "
+card_source_caption = " Source "
 card_title_max_length = 40
 `)
 	cfg, err := Load(p)
@@ -125,21 +129,40 @@ card_title_max_length = 40
 	if cfg.CardCaption != "View screenshot" {
 		t.Errorf("card_caption not trimmed: %q", cfg.CardCaption)
 	}
+	if cfg.CardSourceCaption != "Source" {
+		t.Errorf("card_source_caption not trimmed: %q", cfg.CardSourceCaption)
+	}
 	if cfg.CardTitleMaxLength != 40 {
 		t.Errorf("card_title_max_length not parsed: %d", cfg.CardTitleMaxLength)
 	}
 }
 
+func TestLoadAcceptsEmptyCardCaptions(t *testing.T) {
+	// An empty caption drops its footer link rather than falling back to the
+	// default.
+	p := writeConfig(t, minimalConfig+`
+card_caption = ""
+card_source_caption = "  "
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CardCaption != "" || cfg.CardSourceCaption != "" {
+		t.Errorf("empty captions should stay empty, got %q and %q", cfg.CardCaption, cfg.CardSourceCaption)
+	}
+}
+
 func TestLoadRejectsBadCardSettings(t *testing.T) {
 	cases := map[string]string{
-		"unknown style":        `card_style = "thumbnail"`,
-		"empty caption":        `card_caption = "   "`,
-		"overlong caption":     `card_caption = "` + strings.Repeat("x", 151) + `"`,
-		"zero title length":    `card_title_max_length = 0`,
-		"huge title length":    `card_title_max_length = 251`,
-		"non-http favicon":     `card_favicon_url = "ftp://example.com/icon.png"`,
-		"relative favicon":     `card_favicon_url = "/assets/icon-64.png"`,
-		"favicon with no host": `card_favicon_url = "https:///icon.png"`,
+		"unknown style":           `card_style = "thumbnail"`,
+		"overlong caption":        `card_caption = "` + strings.Repeat("x", 151) + `"`,
+		"overlong source caption": `card_source_caption = "` + strings.Repeat("x", 151) + `"`,
+		"zero title length":       `card_title_max_length = 0`,
+		"huge title length":       `card_title_max_length = 251`,
+		"non-http favicon":        `card_favicon_url = "ftp://example.com/icon.png"`,
+		"relative favicon":        `card_favicon_url = "/assets/icon-64.png"`,
+		"favicon with no host":    `card_favicon_url = "https:///icon.png"`,
 	}
 	for name, line := range cases {
 		t.Run(name, func(t *testing.T) {

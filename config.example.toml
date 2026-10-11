@@ -93,7 +93,8 @@ app_token_env_var = "SLACK_APP_TOKEN"
 # How the card presents the screenshot. Both styles show the same stored
 # preview; only the card around it differs.
 #  - "image": the whole preview, uncropped, under the title, with a footer line
-#    (card_favicon_url + card_caption) linking to the screenshot's page. Slack
+#    (card_favicon_url, then card_caption and card_source_caption) linking to
+#    the screenshot's page and to the page it was taken from. Slack
 #    keeps a coloured bar down the card's left edge, which cannot be removed
 #    for this style. It relies on Slack drawing a remote file in an image
 #    block, which works but which Slack does not document.
@@ -113,8 +114,15 @@ app_token_env_var = "SLACK_APP_TOKEN"
 # card_favicon_url = "https://www.screenshotter.org/favicon-32x32.png"
 
 # Text of the image card's footer link to the screenshot's page. At most 150
-# characters. Unused by the "file" style. Default: "Open in Screenshotter".
+# characters; "" removes the link. Unused by the "file" style.
+# Default: "Open in Screenshotter".
 # card_caption = "Open in Screenshotter"
+
+# Text of the image card's footer link to the page the screenshot was taken
+# from, shown when the server knows that page. At most 150 characters; ""
+# removes the link. With both captions empty the card has no footer (and no
+# icon). Unused by the "file" style. Default: "Open source page".
+# card_source_caption = "Open source page"
 
 # Longest card title, in characters; longer titles are cut after that many and
 # followed by "…". Applies to both styles. Between 1 and 250. Default: 90.

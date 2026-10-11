@@ -218,6 +218,7 @@ type pendingShare struct {
 	extID  string // the remote file registered for this share
 	fileID string // Slack's ID for that remote file, which an image block references
 	title  string // the card's title, reused as the attachment's plain-text fallback
+	source string // the page the screenshot was taken from, or "" if unknown
 }
 
 // registerShare fetches the screenshot and registers this share of it as a
@@ -233,7 +234,7 @@ func (b *Bridge) registerShare(ctx context.Context, ev *slackevents.LinkSharedEv
 		return pendingShare{}, fmt.Errorf("prepare preview: %w", err)
 	}
 
-	sh := pendingShare{link: link, id: id, extID: shareExternalID(id, ev), title: previewTitle(id, meta, b.cfg.CardTitleMaxLength)}
+	sh := pendingShare{link: link, id: id, extID: shareExternalID(id, ev), title: previewTitle(id, meta, b.cfg.CardTitleMaxLength), source: meta.sourceURL}
 	file, err := b.addRemoteFile(ctx, sh, preview, meta)
 	if err != nil {
 		return pendingShare{}, fmt.Errorf("files.remote.add: %s", slackErr(err))
@@ -276,22 +277,54 @@ func (b *Bridge) cardAttachment(sh pendingShare) slack.Attachment {
 	// The image style draws the remote file's stored preview, uncropped,
 	// through an image block's slack_file — which Slack accepts for remote files
 	// although it documents slack_file only for uploaded ones. The picture is
-	// not a link, so the click-through is a footer line of our own. HideColor is
-	// rejected alongside an image block (cannot_parse_attachment), so this card
-	// keeps Slack's colour bar.
+	// not a link, so the click-throughs are a footer line of our own. HideColor
+	// is rejected alongside an image block (cannot_parse_attachment), so this
+	// card keeps Slack's colour bar.
 	image := slack.NewImageBlockSlackFile(&slack.SlackFileObject{ID: sh.fileID}, sh.title, "",
 		slack.NewTextBlockObject(slack.PlainTextType, sh.title, false, false))
-	var footer []slack.MixedElement
-	if b.cfg.CardFaviconURL != "" {
-		// Slack fetches this itself: a remote file renders blank here.
-		footer = append(footer, slack.NewImageBlockElement(b.cfg.CardFaviconURL, "Screenshotter"))
+	blocks := []slack.Block{image}
+	if footer := b.cardFooter(sh); footer != nil {
+		blocks = append(blocks, footer)
 	}
-	footer = append(footer, slack.NewTextBlockObject(slack.MarkdownType,
-		"<"+b.pageURL(sh.id)+"|"+escapeMrkdwn(b.cfg.CardCaption)+">", false, false))
 	return slack.Attachment{
 		Fallback: sh.title,
-		Blocks:   slack.Blocks{BlockSet: []slack.Block{image, slack.NewContextBlock("", footer...)}},
+		Blocks:   slack.Blocks{BlockSet: blocks},
 	}
+}
+
+// footerSeparator sits between the links of the image card's footer.
+const footerSeparator = "   •   "
+
+// cardFooter returns the image card's footer: the favicon, then the links to
+// the screenshot's page and to its source page, each present only when its
+// caption is set (and, for the source, when the server reported an http(s)
+// source URL). It returns nil when there is no link to show.
+func (b *Bridge) cardFooter(sh pendingShare) *slack.ContextBlock {
+	var links []string
+	if b.cfg.CardCaption != "" {
+		links = append(links, mrkdwnLink(b.pageURL(sh.id), b.cfg.CardCaption))
+	}
+	if b.cfg.CardSourceCaption != "" && isWebURL(sh.source) {
+		links = append(links, mrkdwnLink(sh.source, b.cfg.CardSourceCaption))
+	}
+	if len(links) == 0 {
+		return nil
+	}
+	var elems []slack.MixedElement
+	if b.cfg.CardFaviconURL != "" {
+		// Slack fetches this itself: a remote file renders blank here.
+		elems = append(elems, slack.NewImageBlockElement(b.cfg.CardFaviconURL, "Screenshotter"))
+	}
+	elems = append(elems, slack.NewTextBlockObject(slack.MarkdownType,
+		strings.Join(links, footerSeparator), false, false))
+	return slack.NewContextBlock("", elems...)
+}
+
+// isWebURL reports whether s is an absolute http(s) URL, the only kind of
+// source page the card links to.
+func isWebURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
 // mrkdwnEscaper escapes the three characters Slack's mrkdwn gives a meaning in
@@ -301,6 +334,12 @@ var mrkdwnEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 // escapeMrkdwn makes s safe to embed as literal mrkdwn text.
 func escapeMrkdwn(s string) string {
 	return mrkdwnEscaper.Replace(s)
+}
+
+// mrkdwnLink returns a mrkdwn link to target showing text. A "|" in target is
+// percent-encoded, since Slack would otherwise take it as the end of the URL.
+func mrkdwnLink(target, text string) string {
+	return "<" + escapeMrkdwn(strings.ReplaceAll(target, "|", "%7C")) + "|" + escapeMrkdwn(text) + ">"
 }
 
 // shareExternalID returns the external_id registering one share of image id.
@@ -328,8 +367,8 @@ func (b *Bridge) addRemoteFile(ctx context.Context, sh pendingShare, preview []b
 		ExternalURL: b.pageURL(sh.id),
 		Title:       sh.title,
 		Filetype:    "png",
-		// The card has no room for the source URL, so it is stored as the file's
-		// indexable contents instead of being dropped.
+		// The file card has no room for the source URL, so it is also stored as
+		// the file's indexable contents.
 		IndexableFileContents: strings.TrimSpace(meta.title + " " + meta.sourceURL),
 		PreviewImageReader:    bytes.NewReader(preview),
 		PreviewImageName:      sh.id + ".png",

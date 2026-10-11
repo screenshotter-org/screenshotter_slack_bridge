@@ -347,7 +347,7 @@ func imageCard(t *testing.T, att slack.Attachment) (*slack.ImageBlock, []slack.M
 	return img, footer.ContextElements.Elements
 }
 
-// footerLink returns the mrkdwn text of the footer's last element, the link.
+// footerLink returns the mrkdwn text of the footer's last element, the links.
 func footerLink(t *testing.T, elems []slack.MixedElement) string {
 	t.Helper()
 	if len(elems) == 0 {
@@ -426,6 +426,61 @@ func TestImageStyleEscapesTheCaption(t *testing.T) {
 	_, footer := imageCard(t, unfurlFor(t, api, "https://screen.corp.example/abcdef"))
 	if got, want := footerLink(t, footer), "<"+srv.URL+"/abcdef|Q&amp;A &lt;here&gt;>"; got != want {
 		t.Errorf("footer link = %q, want %q", got, want)
+	}
+}
+
+func TestImageStyleFooterLinks(t *testing.T) {
+	const source = "https://app.example/checkout?a=1&b=2"
+	cases := []struct {
+		name          string
+		source        string // the X-Screenshot-Source-Url the server reports
+		caption       string
+		sourceCaption string
+		want          string // the footer's mrkdwn text; "" for no footer at all
+	}{
+		{"both links", source, "Open in Screenshotter", "Open source page",
+			"<{base}/abcdef|Open in Screenshotter>   •   <https://app.example/checkout?a=1&amp;b=2|Open source page>"},
+		{"no source reported", "", "Open in Screenshotter", "Open source page",
+			"<{base}/abcdef|Open in Screenshotter>"},
+		{"non-web source", "javascript:alert(1)", "Open in Screenshotter", "Open source page",
+			"<{base}/abcdef|Open in Screenshotter>"},
+		{"pipe in the source", "https://app.example/a|b>c", "Open in Screenshotter", "Open source page",
+			"<{base}/abcdef|Open in Screenshotter>   •   <https://app.example/a%7Cb&gt;c|Open source page>"},
+		{"page caption empty", source, "", "Open source page",
+			"<https://app.example/checkout?a=1&amp;b=2|Open source page>"},
+		{"source caption empty", source, "Open in Screenshotter", "",
+			"<{base}/abcdef|Open in Screenshotter>"},
+		{"both captions empty", source, "", "", ""},
+		{"no link left", "", "", "Open source page", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := pngServerWithMeta(t, testPNG(t, 800, 600), "My page", tc.source)
+			defer srv.Close()
+
+			api := &fakeAPI{}
+			cfg := baseConfig(srv.URL)
+			cfg.CardCaption = tc.caption
+			cfg.CardSourceCaption = tc.sourceCaption
+			b := newTestBridge(t, api, cfg)
+			b.HandleLinkShared(context.Background(), "T1", linkEvent())
+
+			att := unfurlFor(t, api, "https://screen.corp.example/abcdef")
+			if tc.want == "" {
+				// Without a link the footer goes, favicon and all.
+				if blocks := att.Blocks.BlockSet; len(blocks) != 1 {
+					t.Fatalf("card should hold only the image block, got %d blocks: %v", len(blocks), blocks)
+				}
+				return
+			}
+			_, footer := imageCard(t, att)
+			if len(footer) != 2 {
+				t.Fatalf("footer should hold the icon and the links, got %d elements", len(footer))
+			}
+			if got, want := footerLink(t, footer), strings.ReplaceAll(tc.want, "{base}", srv.URL); got != want {
+				t.Errorf("footer links = %q, want %q", got, want)
+			}
+		})
 	}
 }
 
