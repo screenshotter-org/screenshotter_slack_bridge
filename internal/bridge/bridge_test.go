@@ -3,6 +3,7 @@ package bridge
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -57,7 +58,37 @@ type fakeAPI struct {
 	userErr      error
 	groupMembers map[string][]string
 	groupErr     error
+
+	// Uploads (card_style "image_upload").
+	uploads   []fileUpload
+	completed []slack.CompleteUploadExternalParameters
+	// listed is what files.list returns; listErr fails it instead.
+	listed    []slack.File
+	listErr   error
+	listCalls []slack.GetFilesParameters
+	// fileInfos counts files.info calls; the first readyAfter of them report
+	// the upload as not processed yet.
+	fileInfos  int
+	readyAfter int
+	// deleted records files.delete calls, with the number of unfurls made
+	// before each.
+	deleted []fileDeletion
 }
+
+// fileUpload is one recorded file upload: the name and alt text announced to
+// files.getUploadURLExternal, and the bytes then sent to the upload URL.
+type fileUpload struct {
+	name, altText string
+	data          []byte
+}
+
+type fileDeletion struct {
+	fileID        string
+	unfurlsBefore int
+}
+
+// botUserID is the bot user the fake's auth.test reports.
+const botUserID = "UBOT"
 
 func (f *fakeAPI) AddRemoteFileContext(_ context.Context, p slack.RemoteFileParameters) (*slack.RemoteFile, error) {
 	var preview []byte
@@ -111,6 +142,71 @@ func (f *fakeAPI) UnfurlMessageContext(_ context.Context, _, _ string, unfurls m
 		f.unfurled[k] = v
 	}
 	return "", "", "", f.unfurlErr
+}
+
+func (f *fakeAPI) GetUploadURLExternalContext(_ context.Context, p slack.GetUploadURLExternalParameters) (*slack.GetUploadURLExternalResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.uploads = append(f.uploads, fileUpload{name: p.FileName, altText: p.AltTxt})
+	n := len(f.uploads)
+	return &slack.GetUploadURLExternalResponse{
+		UploadURL: fmt.Sprintf("https://files.slack.example/upload/%d", n),
+		FileID:    fmt.Sprintf("FUP%d", n),
+	}, nil
+}
+
+func (f *fakeAPI) UploadToURL(_ context.Context, p slack.UploadToURLParameters) error {
+	data, err := io.ReadAll(p.Reader)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int
+	if _, err := fmt.Sscanf(p.UploadURL, "https://files.slack.example/upload/%d", &n); err != nil || n < 1 || n > len(f.uploads) {
+		return fmt.Errorf("unknown upload URL %q", p.UploadURL)
+	}
+	f.uploads[n-1].data = data
+	return nil
+}
+
+func (f *fakeAPI) CompleteUploadExternalContext(_ context.Context, p slack.CompleteUploadExternalParameters) (*slack.CompleteUploadExternalResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.completed = append(f.completed, p)
+	return &slack.CompleteUploadExternalResponse{}, nil
+}
+
+func (f *fakeAPI) GetFileInfoContext(_ context.Context, fileID string, _, _ int) (*slack.File, []slack.Comment, *slack.Paging, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fileInfos++
+	file := &slack.File{ID: fileID}
+	if f.fileInfos > f.readyAfter {
+		file.OriginalW = 800
+	}
+	return file, nil, nil, nil
+}
+
+func (f *fakeAPI) GetFilesContext(_ context.Context, p slack.GetFilesParameters) ([]slack.File, *slack.Paging, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listCalls = append(f.listCalls, p)
+	if f.listErr != nil {
+		return nil, nil, f.listErr
+	}
+	return f.listed, &slack.Paging{}, nil
+}
+
+func (f *fakeAPI) DeleteFileContext(_ context.Context, fileID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleted = append(f.deleted, fileDeletion{fileID: fileID, unfurlsBefore: f.unfurls})
+	return nil
+}
+
+func (f *fakeAPI) AuthTestContext(context.Context) (*slack.AuthTestResponse, error) {
+	return &slack.AuthTestResponse{UserID: botUserID}, nil
 }
 
 func (f *fakeAPI) GetUserInfoContext(_ context.Context, user string, _ ...slack.GetUserInfoOption) (*slack.User, error) {

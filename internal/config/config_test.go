@@ -137,6 +137,29 @@ card_title_max_length = 40
 	}
 }
 
+func TestLoadImageUploadStyleLiftsTheDefaultMaxDimension(t *testing.T) {
+	cfg, err := Load(writeConfig(t, minimalConfig+`card_style = "image_upload"`+"\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CardStyle != CardStyleImageUpload {
+		t.Errorf("card_style not parsed: %q", cfg.CardStyle)
+	}
+	if cfg.MaxDimension != 0 {
+		t.Errorf("image_upload should default to no max_dimension cap, got %d", cfg.MaxDimension)
+	}
+
+	cfg, err = Load(writeConfig(t, minimalConfig+`card_style = "image_upload"
+max_dimension = 2400
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MaxDimension != 2400 {
+		t.Errorf("an explicit max_dimension must be kept, got %d", cfg.MaxDimension)
+	}
+}
+
 func TestLoadAcceptsEmptyCardCaptions(t *testing.T) {
 	// An empty caption drops its footer link rather than falling back to the
 	// default.

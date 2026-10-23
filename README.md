@@ -18,10 +18,10 @@ deployment — is at
 
 When someone posts a link on one of the domains you register, Slack delivers a
 `link_shared` event over the WebSocket. The bridge fetches the PNG from the
-Screenshotter server, registers it with Slack as a *remote file* whose preview
-Slack stores workspace-privately, and replaces the link with a card showing that
-preview. The card links to the screenshot's page on your server, so the
-full-size image never leaves your network.
+Screenshotter server, stores it in Slack workspace-privately — as the preview
+of a *remote file*, or uploaded at full resolution with
+`card_style = "image_upload"` — and replaces the link with a card showing it. The card links to the screenshot's page on your server, which needs no
+inbound path from Slack.
 
 ## Container
 
@@ -76,9 +76,10 @@ every option is documented inline there. The three required settings are:
   (`xapp-…`). Prefer the `bot_token_env_var` / `app_token_env_var` forms so the
   secrets stay out of the config file.
 
-The Slack app needs the `links:read`, `links:write`, `remote_files:write` and
-`remote_files:read` bot scopes, plus a `connections:write` app-level token for
-Socket Mode. The bridge assumes the server runs with
+The Slack app needs the `links:read` and `links:write` bot scopes, plus
+`files:write` and `files:read` with `card_style = "image_upload"` or
+`remote_files:write` and `remote_files:read` with the other styles, and a
+`connections:write` app-level token for Socket Mode. The bridge assumes the server runs with
 `require_auth_to_view = false`: the image ID is the capability.
 
 ### Card styles
@@ -92,6 +93,15 @@ fetches that icon, `card_favicon_url`, itself, so it must be a public URL; it
 defaults to the icon on www.screenshotter.org, and `""` removes it. `"file"` shows
 Slack's own file card instead, which crops the preview and puts a file header
 above it, but has no coloured bar down its left edge.
+
+`"image_upload"` is the recommended choice: the same card as `"image"`, but
+the screenshot is uploaded to Slack as a regular file rather than a remote
+file's preview, which Slack never shows more than 1024 px wide — blurry on
+high-density screens. An upload shows at full resolution. It needs the
+`files:write` and `files:read` scopes instead of the `remote_files` ones (add
+them, then reinstall the app to the workspace; the bot token does not change),
+each share's copy counts towards the workspace's file storage, and the bridge
+must be allowed to reach `files.slack.com`.
 
 ## Slack app setup
 

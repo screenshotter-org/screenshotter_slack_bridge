@@ -1,8 +1,9 @@
 // Package bridge contains the core logic that turns a Slack link_shared event
-// for a screenshotter link into an inline unfurl backed by a Slack remote file:
-// the screenshot is registered with files.remote.add, whose preview Slack stores
-// workspace-privately, and the link is replaced by a card pointing back at the
-// (possibly private) screenshotter page.
+// for a screenshotter link into an inline unfurl backed by a Slack file: the
+// screenshot is either registered with files.remote.add, whose preview Slack
+// stores workspace-privately, or uploaded (card_style "image_upload"), and the
+// link is replaced by a card pointing back at the (possibly private)
+// screenshotter page.
 package bridge
 
 import (
@@ -33,8 +34,9 @@ const maxImageBytes = 64 << 20 // 64 MiB
 // errNotFound is returned when the screenshotter server has no such image.
 var errNotFound = errors.New("image not found")
 
-// previewPollInterval is how often files.remote.info is polled while waiting for
-// Slack to finish parsing the preview image. Parsing took ~1.7-2.1s in testing.
+// previewPollInterval is how often files.remote.info (or files.info, for an
+// upload) is polled while waiting for Slack to finish parsing the preview
+// image. Parsing took ~1.7-2.1s in testing.
 const previewPollInterval = 250 * time.Millisecond
 
 // idPattern matches the random alphanumeric image IDs the server generates.
@@ -62,6 +64,13 @@ var defaultReservedPaths = []string{
 type slackAPI interface {
 	AddRemoteFileContext(ctx context.Context, params slack.RemoteFileParameters) (*slack.RemoteFile, error)
 	GetRemoteFileInfoContext(ctx context.Context, externalID, fileID string) (*slack.RemoteFile, error)
+	GetUploadURLExternalContext(ctx context.Context, params slack.GetUploadURLExternalParameters) (*slack.GetUploadURLExternalResponse, error)
+	UploadToURL(ctx context.Context, params slack.UploadToURLParameters) error
+	CompleteUploadExternalContext(ctx context.Context, params slack.CompleteUploadExternalParameters) (*slack.CompleteUploadExternalResponse, error)
+	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
+	GetFilesContext(ctx context.Context, params slack.GetFilesParameters) ([]slack.File, *slack.Paging, error)
+	DeleteFileContext(ctx context.Context, fileID string) error
+	AuthTestContext(ctx context.Context) (*slack.AuthTestResponse, error)
 	UnfurlMessageContext(ctx context.Context, channelID, timestamp string, unfurls map[string]slack.Attachment, options ...slack.MsgOption) (string, string, string, error)
 	GetUserInfoContext(ctx context.Context, user string, options ...slack.GetUserInfoOption) (*slack.User, error)
 	GetUserGroupMembersContext(ctx context.Context, userGroup string, options ...slack.GetUserGroupMembersOption) ([]string, error)
@@ -82,6 +91,7 @@ type Bridge struct {
 	// the memory-heavy step, independently of admit.
 	convert chan struct{}
 	authz   *authorizer // nil when no user restrictions are configured
+	bot     botIdentity // the bot's user ID, looked up for card_style "image_upload"
 	log     *log.Logger
 }
 
@@ -215,26 +225,39 @@ func (b *Bridge) HandleLinkShared(ctx context.Context, teamID string, ev *slacke
 type pendingShare struct {
 	link   string // the URL as posted, which keys the unfurl
 	id     string // the image ID, for logging
-	extID  string // the remote file registered for this share
-	fileID string // Slack's ID for that remote file, which an image block references
+	extID  string // the remote file registered for this share; "" for an upload
+	fileID string // Slack's ID for the remote file or upload, which an image block references
 	title  string // the card's title, reused as the attachment's plain-text fallback
 	source string // the page the screenshot was taken from, or "" if unknown
+	// ready is set when Slack is known to have processed the file already (an
+	// earlier upload being reused), so there is nothing to wait for.
+	ready bool
+	// stale lists earlier uploads backing this share, to delete once the
+	// unfurl has replaced them.
+	stale []string
 }
 
 // registerShare fetches the screenshot and registers this share of it as a
-// remote file, returning the share to unfurl. The memory-heavy image
-// conversion is bounded by preparePreview.
+// remote file or an upload, returning the share to unfurl. The memory-heavy
+// image conversion is bounded by preparePreview.
 func (b *Bridge) registerShare(ctx context.Context, ev *slackevents.LinkSharedEvent, link, id string) (pendingShare, error) {
 	data, meta, err := b.fetchPNG(ctx, id)
 	if err != nil {
 		return pendingShare{}, err // may be errNotFound; let the caller classify it
 	}
+	sh := pendingShare{link: link, id: id, title: previewTitle(id, meta, b.cfg.CardTitleMaxLength), source: meta.sourceURL}
+	if b.cfg.CardStyle == config.CardStyleImageUpload {
+		if err := b.uploadShare(ctx, ev, &sh, data); err != nil {
+			return pendingShare{}, err
+		}
+		return sh, nil
+	}
+
 	preview, err := b.preparePreview(ctx, data)
 	if err != nil {
 		return pendingShare{}, fmt.Errorf("prepare preview: %w", err)
 	}
-
-	sh := pendingShare{link: link, id: id, extID: shareExternalID(id, ev), title: previewTitle(id, meta, b.cfg.CardTitleMaxLength), source: meta.sourceURL}
+	sh.extID = shareExternalID(id, ev)
 	file, err := b.addRemoteFile(ctx, sh, preview, meta)
 	if err != nil {
 		return pendingShare{}, fmt.Errorf("files.remote.add: %s", slackErr(err))
@@ -248,12 +271,14 @@ func (b *Bridge) registerShare(ctx context.Context, ev *slackevents.LinkSharedEv
 	return sh, nil
 }
 
-// unfurlShare replaces the posted link with a card for its remote file.
+// unfurlShare replaces the posted link with a card for its file, then deletes
+// the uploads the card supersedes.
 func (b *Bridge) unfurlShare(ctx context.Context, ev *slackevents.LinkSharedEvent, sh pendingShare) error {
 	unfurls := map[string]slack.Attachment{sh.link: b.cardAttachment(sh)}
 	if err := b.unfurl(ctx, ev.Channel, ev.MessageTimeStamp, unfurls); err != nil {
 		return fmt.Errorf("unfurl: %s", slackErr(err))
 	}
+	b.deleteStale(ctx, sh)
 	return nil
 }
 
@@ -274,10 +299,11 @@ func (b *Bridge) cardAttachment(sh pendingShare) slack.Attachment {
 		}
 	}
 
-	// The image style draws the remote file's stored preview, uncropped,
-	// through an image block's slack_file — which Slack accepts for remote files
-	// although it documents slack_file only for uploaded ones. The picture is
-	// not a link, so the click-throughs are a footer line of our own. HideColor
+	// The image styles draw the file uncropped through an image block's
+	// slack_file. For a remote file that is its stored preview, which Slack
+	// accepts although it documents slack_file only for uploaded files. The
+	// picture is not a link, so the click-throughs are a footer line of our
+	// own. HideColor
 	// is rejected alongside an image block (cannot_parse_attachment), so this
 	// card keeps Slack's colour bar.
 	image := slack.NewImageBlockSlackFile(&slack.SlackFileObject{ID: sh.fileID}, sh.title, "",
@@ -375,38 +401,47 @@ func (b *Bridge) addRemoteFile(ctx context.Context, sh pendingShare, preview []b
 	})
 }
 
-// waitForPreviews blocks until Slack has parsed the preview image of every
-// share, or until preview_wait elapses. files.remote.add returns before a
-// preview is ready; unfurling in that window still works — Slack fills the card
-// in on its own — but the screenshot takes far longer to show up, so waiting is
-// worth a few polls. Slack parses the previews concurrently, so one deadline
-// covers the whole message. Failures are not fatal: the unfurls proceed anyway.
+// waitForPreviews blocks until Slack has processed the image of every share,
+// or until the wait times out. Both files.remote.add and an upload return
+// before the image is ready. For a remote file, unfurling in that window still
+// works — Slack fills the card in on its own — but the screenshot takes far
+// longer to show up, so waiting is worth a few polls, up to preview_wait. An
+// upload cannot be unfurled before it is ready, so it is always waited for, up
+// to uploadReadyTimeout. Slack processes the images concurrently, so one
+// deadline covers the whole message. Failures are not fatal: the unfurls
+// proceed anyway.
 func (b *Bridge) waitForPreviews(ctx context.Context, shares []pendingShare) {
-	if b.cfg.PreviewWait.Duration <= 0 {
+	timeout, ready := b.cfg.PreviewWait.Duration, b.remotePreviewReady
+	if b.cfg.CardStyle == config.CardStyleImageUpload {
+		timeout, ready = uploadReadyTimeout, b.uploadReady
+	}
+	if timeout <= 0 {
 		return
 	}
-	wctx, cancel := context.WithTimeout(ctx, b.cfg.PreviewWait.Duration)
+	wctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	pending := make([]string, len(shares))
-	for i, sh := range shares {
-		pending[i] = sh.extID
+	var pending []pendingShare
+	for _, sh := range shares {
+		if !sh.ready {
+			pending = append(pending, sh)
+		}
 	}
 
-	for {
-		var notReady []string
-		for _, extID := range pending {
-			file, err := b.api.GetRemoteFileInfoContext(wctx, extID, "")
+	for len(pending) > 0 {
+		var notReady []pendingShare
+		for _, sh := range pending {
+			ok, err := ready(wctx, sh)
 			switch {
 			case wctx.Err() != nil:
 				b.log.Printf("previews for %d file(s) not ready after %v; unfurling anyway",
-					len(pending), b.cfg.PreviewWait.Duration)
+					len(pending), timeout)
 				return
 			case err != nil:
 				// Stop tracking this one rather than holding up the others.
-				b.log.Printf("preview status for %q unavailable (%s); unfurling anyway", extID, slackErr(err))
-			case file == nil || !file.HasRichPreview:
-				notReady = append(notReady, extID)
+				b.log.Printf("preview status for %q unavailable (%s); unfurling anyway", sh.id, slackErr(err))
+			case !ok:
+				notReady = append(notReady, sh)
 			}
 		}
 		if len(notReady) == 0 {
@@ -418,10 +453,20 @@ func (b *Bridge) waitForPreviews(ctx context.Context, shares []pendingShare) {
 		case <-time.After(previewPollInterval):
 		case <-wctx.Done():
 			b.log.Printf("previews for %d file(s) not ready after %v; unfurling anyway",
-				len(pending), b.cfg.PreviewWait.Duration)
+				len(pending), timeout)
 			return
 		}
 	}
+}
+
+// remotePreviewReady reports whether Slack has parsed the preview of the
+// remote file backing sh.
+func (b *Bridge) remotePreviewReady(ctx context.Context, sh pendingShare) (bool, error) {
+	file, err := b.api.GetRemoteFileInfoContext(ctx, sh.extID, "")
+	if err != nil {
+		return false, err
+	}
+	return file != nil && file.HasRichPreview, nil
 }
 
 // pageURL is the screenshot's HTML page on the screenshotter server — the

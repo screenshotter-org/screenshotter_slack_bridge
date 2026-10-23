@@ -7,11 +7,11 @@
 # screenshotter server it reads from does NOT need to be reachable from the
 # public internet — only the bridge needs outbound HTTPS access to Slack.
 #
-# Each recognised link is registered with Slack as a "remote file" whose preview
-# image Slack stores workspace-privately, and the link is replaced by a card
-# showing that preview. The card links to the screenshot's page on
-# screenshotter_base_url, so only people who can reach your server see the
-# full-size image.
+# Each recognised link is stored in Slack — as the preview of a "remote file",
+# or as an uploaded file with card_style = "image_upload" — workspace-privately,
+# and the link is replaced by a card showing that image. The card links to the
+# screenshot's page on screenshotter_base_url, which only people who can reach
+# your server can open.
 
 # ---------------------------------------------------------------------------
 # Screenshotter server
@@ -74,7 +74,9 @@ app_token_env_var = "SLACK_APP_TOKEN"
 # size and latency; the card links through to the full-resolution image, so the
 # preview does not need to be pixel-exact. Set 0 to send previews at full
 # resolution. Must be 0 or at least 300 — Slack rejects a preview whose width or
-# height is under 300 px. Default: 1600.
+# height is under 300 px. Default: 1600, or 0 (full resolution) with
+# card_style = "image_upload". A remote file is never shown more than 1024 px
+# wide, so a larger value only helps "image_upload".
 # max_dimension = 1600
 
 # Slack parses the preview image asynchronously and files.remote.add returns
@@ -83,15 +85,32 @@ app_token_env_var = "SLACK_APP_TOKEN"
 # an error — Slack fills the card in by itself — but the screenshot then takes
 # much longer to appear (~12s observed, against ~3s when the bridge waits).
 # Set "0s" to unfurl immediately and skip the polling (and the
-# remote_files:read scope). Default: 8s.
+# remote_files:read scope). Unused by card_style = "image_upload", which always
+# waits, up to 15s: Slack refuses to unfurl an upload it has not processed yet.
+# Default: 8s.
 # preview_wait = "8s"
 
 # ---------------------------------------------------------------------------
 # Card appearance
 # ---------------------------------------------------------------------------
 
-# How the card presents the screenshot. Both styles show the same stored
-# preview; only the card around it differs.
+# How the card presents the screenshot, and how the screenshot is stored in
+# Slack.
+#  - "image_upload" (recommended): the same card as "image", but the screenshot
+#    is uploaded to Slack as a regular file instead of a remote file's preview.
+#    Slack shows a remote file at most 1024 px wide, so "image" looks blurry on
+#    high-density (Retina) screens; an upload is shown, and opens in Slack's
+#    viewer, at full resolution. In exchange:
+#      - the app needs the files:write and files:read scopes (instead of
+#        remote_files:write and remote_files:read), and Slack must be
+#        reinstalled into the workspace after adding them;
+#      - every share uploads its own copy, which counts towards the workspace's
+#        file storage and appears in the conversation's file list and in
+#        search for its members; a copy the bridge replaces (the screenshot
+#        changed on the server) is deleted;
+#      - the bridge also sends images to files.slack.com, which a firewall must
+#        allow.
+#    Not the default only because it needs those extra scopes.
 #  - "image": the whole preview, uncropped, under the title, with a footer line
 #    (card_favicon_url, then card_caption and card_source_caption) linking to
 #    the screenshot's page and to the page it was taken from. Slack
@@ -101,8 +120,8 @@ app_token_env_var = "SLACK_APP_TOKEN"
 #  - "file": Slack's own file card, with a file icon, the title and "PNG" above
 #    the preview, which Slack crops to the card's shape; the whole card links to
 #    the screenshot's page.
-# Either way Slack adds its usual row with the file size and a collapse toggle.
-# Default: "image".
+# In every style Slack adds its usual row with the file size and a collapse
+# toggle. Default: "image".
 # card_style = "image"
 
 # Icon shown at the start of the image card's footer. Slack's servers fetch it
@@ -125,7 +144,7 @@ app_token_env_var = "SLACK_APP_TOKEN"
 # card_source_caption = "Open source page"
 
 # Longest card title, in characters; longer titles are cut after that many and
-# followed by "…". Applies to both styles. Between 1 and 250. Default: 90.
+# followed by "…". Applies to every style. Between 1 and 250. Default: 90.
 # card_title_max_length = 90
 
 # ---------------------------------------------------------------------------
@@ -133,7 +152,8 @@ app_token_env_var = "SLACK_APP_TOKEN"
 # ---------------------------------------------------------------------------
 
 # Timeout applied to each outbound request: fetching an image AND each Slack API
-# call (remote file add/info, unfurl, user/usergroup lookups). Default: 30s.
+# call (file uploads, remote file add/info, unfurl, user/usergroup lookups).
+# Default: 30s.
 # request_timeout = "30s"
 
 # Maximum number of link_shared events handled in parallel (the network/Slack

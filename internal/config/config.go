@@ -15,9 +15,9 @@ import (
 	"github.com/screenshotter-org/screenshotter_slack_bridge/internal/imageproc"
 )
 
-// CardStyle selects how an unfurled screenshot is presented in Slack. Both
-// styles show the same remote file; only the attachment built around it
-// differs.
+// CardStyle selects how an unfurled screenshot is presented in Slack, and
+// how the screenshot is stored there: as the preview of a remote file, or as
+// an uploaded file.
 type CardStyle string
 
 const (
@@ -27,7 +27,18 @@ const (
 	// CardStyleFile shows the remote file's own card: Slack's file header
 	// (icon, title, filetype) over a cropped preview.
 	CardStyleFile CardStyle = "file"
+	// CardStyleImageUpload shows the same card as CardStyleImage, but backed
+	// by a regular Slack upload instead of a remote file: Slack serves remote
+	// file previews at most 1024 px wide, uploads at full resolution. It needs
+	// the files:write and files:read scopes, and the uploads count towards the
+	// workspace's file storage.
+	CardStyleImageUpload CardStyle = "image_upload"
 )
+
+// defaultMaxDimension is max_dimension's default for the remote file styles;
+// CardStyleImageUpload defaults to no cap, since it is meant to keep the
+// resolution.
+const defaultMaxDimension = 1600
 
 // DefaultCardFaviconURL is the default icon in the image card's footer. Slack
 // fetches it from its own servers when rendering the card, so it must be
@@ -90,7 +101,7 @@ type Config struct {
 	// preserving aspect ratio. The card links through to the full-resolution
 	// image on the server, so the preview does not need to be pixel-exact.
 	// 0 disables the cap. Must be 0 or at least 300, the smallest side Slack
-	// accepts. Default: 1600.
+	// accepts. Default: 1600, or 0 with CardStyleImageUpload.
 	MaxDimension int `toml:"max_dimension"`
 
 	// PreviewWait bounds how long the bridge waits for Slack to finish parsing
@@ -98,11 +109,13 @@ type Config struct {
 	// unfurling anyway. Unfurling too early still works — Slack fills the card
 	// in on its own — but the screenshot then takes noticeably longer to appear
 	// (~12s observed, against ~3s when the unfurl waits). 0 unfurls immediately.
-	// Default: 8s.
+	// Unused by CardStyleImageUpload, which always waits (Slack rejects an
+	// unfurl referencing an upload it has not processed yet). Default: 8s.
 	PreviewWait TOMLDuration `toml:"preview_wait"`
 
 	// CardStyle selects the unfurl's presentation: CardStyleImage (the
-	// preview, uncropped, over a footer linking to the screenshot's page) or
+	// preview, uncropped, over a footer linking to the screenshot's page),
+	// CardStyleImageUpload (the same card at full resolution), or
 	// CardStyleFile (Slack's file card, which crops the preview). Default:
 	// CardStyleImage.
 	CardStyle CardStyle `toml:"card_style"`
@@ -126,13 +139,14 @@ type Config struct {
 	CardSourceCaption string `toml:"card_source_caption"`
 
 	// CardTitleMaxLength caps the card's title, in characters (runes); longer
-	// titles are cut after that many and followed by an ellipsis ("…"). Applies to both styles. Must be
+	// titles are cut after that many and followed by an ellipsis ("…"). Applies to every style. Must be
 	// between 1 and MaxCardTitleLength. Default: 90.
 	CardTitleMaxLength int `toml:"card_title_max_length"`
 
 	// RequestTimeout bounds each outbound request the bridge makes — both
 	// fetching an image from the screenshotter server and the Slack API calls
-	// (remote file add/info, unfurl, user/usergroup lookups). Default: 30s.
+	// (file uploads, remote file add/info, unfurl, user/usergroup lookups).
+	// Default: 30s.
 	RequestTimeout TOMLDuration `toml:"request_timeout"`
 
 	// MaxConcurrency caps how many link_shared events the bridge handles in
@@ -191,7 +205,7 @@ func (d *TOMLDuration) UnmarshalText(b []byte) error {
 // Load reads, decodes, and validates the configuration at path.
 func Load(path string) (*Config, error) {
 	c := &Config{
-		MaxDimension:       1600,
+		MaxDimension:       defaultMaxDimension,
 		PreviewWait:        TOMLDuration{8 * time.Second},
 		CardStyle:          CardStyleImage,
 		CardFaviconURL:     DefaultCardFaviconURL,
@@ -214,6 +228,9 @@ func Load(path string) (*Config, error) {
 			keys[i] = k.String()
 		}
 		return nil, fmt.Errorf("unknown config keys: %s", strings.Join(keys, ", "))
+	}
+	if c.CardStyle == CardStyleImageUpload && !meta.IsDefined("max_dimension") {
+		c.MaxDimension = 0
 	}
 
 	c.BotToken, err = resolveSecret("bot_token", c.BotToken, "bot_token_env_var", c.BotTokenEnvVar)
@@ -275,9 +292,9 @@ func (c *Config) validate() error {
 		return fmt.Errorf("preview_wait must not be negative")
 	}
 	switch c.CardStyle {
-	case CardStyleImage, CardStyleFile:
+	case CardStyleImage, CardStyleImageUpload, CardStyleFile:
 	default:
-		return fmt.Errorf("card_style must be %q or %q", CardStyleImage, CardStyleFile)
+		return fmt.Errorf("card_style must be %q, %q or %q", CardStyleImage, CardStyleImageUpload, CardStyleFile)
 	}
 	if c.CardFaviconURL != "" {
 		u, err := url.Parse(c.CardFaviconURL)
