@@ -2,7 +2,7 @@ module github.com/screenshotter-org/screenshotter_slack_bridge
 
 go 1.26.0
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 require (
 	github.com/BurntSushi/toml v1.6.0
