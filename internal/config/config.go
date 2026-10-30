@@ -188,9 +188,10 @@ type Config struct {
 	Debug bool `toml:"debug"`
 
 	// SlackAPIURL overrides the base URL of Slack's Web API, through which the
-	// Socket Mode connection is opened too. It exists for tests that run the
-	// bridge against a stand-in for Slack; deployments leave it unset.
-	// Normalised to end with a slash. Default: empty, i.e. Slack's own API.
+	// Socket Mode connection is opened too. For tests only: integration tests
+	// point the bridge at a stand-in for Slack with it. Deliberately left out
+	// of config.example.toml and the user documentation; deployments never set
+	// it. Normalised to end with a slash. Default: empty, i.e. Slack's own API.
 	SlackAPIURL string `toml:"slack_api_url"`
 }
 
