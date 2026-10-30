@@ -39,11 +39,14 @@ func main() {
 		logger.Fatalf("config: %v", err)
 	}
 
-	api := slack.New(
-		cfg.BotToken,
+	opts := []slack.Option{
 		slack.OptionAppLevelToken(cfg.AppToken),
 		slack.OptionDebug(cfg.Debug),
-	)
+	}
+	if cfg.SlackAPIURL != "" {
+		opts = append(opts, slack.OptionAPIURL(cfg.SlackAPIURL))
+	}
+	api := slack.New(cfg.BotToken, opts...)
 	sm := socketmode.New(api, socketmode.OptionDebug(cfg.Debug))
 	b := bridge.New(cfg, api, logger)
 

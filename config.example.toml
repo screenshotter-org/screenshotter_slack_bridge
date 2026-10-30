@@ -201,3 +201,8 @@ app_token_env_var = "SLACK_APP_TOKEN"
 # WARNING: debug output can include the bot token and other sensitive data — do
 # not enable it in production. Default: false.
 # debug = false
+
+# Base URL of Slack's Web API, through which the Socket Mode connection is
+# opened as well. Only for testing the bridge against a stand-in for Slack;
+# leave it unset in a deployment. Default: unset, i.e. https://slack.com/api/.
+# slack_api_url = "http://127.0.0.1:9000/api/"

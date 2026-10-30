@@ -186,6 +186,12 @@ type Config struct {
 	// traffic. WARNING: debug output can include the bot token and other
 	// sensitive data; do not enable it in production. Default: false.
 	Debug bool `toml:"debug"`
+
+	// SlackAPIURL overrides the base URL of Slack's Web API, through which the
+	// Socket Mode connection is opened too. It exists for tests that run the
+	// bridge against a stand-in for Slack; deployments leave it unset.
+	// Normalised to end with a slash. Default: empty, i.e. Slack's own API.
+	SlackAPIURL string `toml:"slack_api_url"`
 }
 
 // TOMLDuration is a time.Duration that unmarshals from a TOML string like
@@ -330,6 +336,13 @@ func (c *Config) validate() error {
 		if c.AllowedUserGroups[i] == "" {
 			return fmt.Errorf("allowed_usergroups contains an empty entry")
 		}
+	}
+	if c.SlackAPIURL != "" {
+		normalized, err := normalizeBaseURL("slack_api_url", c.SlackAPIURL)
+		if err != nil {
+			return err
+		}
+		c.SlackAPIURL = normalized + "/"
 	}
 	for i, p := range c.ExcludedPaths {
 		c.ExcludedPaths[i] = strings.ToLower(strings.Trim(strings.TrimSpace(p), "/"))

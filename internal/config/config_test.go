@@ -324,3 +324,28 @@ app_token = "xapp-app"
 		t.Error("expected an error when screenshotter_fetch_base_url is not absolute")
 	}
 }
+
+func TestLoadSlackAPIURL(t *testing.T) {
+	cfg, err := Load(writeConfig(t, minimalConfig))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SlackAPIURL != "" {
+		t.Errorf("slack_api_url should default to empty, got %q", cfg.SlackAPIURL)
+	}
+
+	// The Slack client appends method names to it, so it must end in a slash.
+	for _, v := range []string{"http://127.0.0.1:9000/api", "http://127.0.0.1:9000/api/"} {
+		cfg, err := Load(writeConfig(t, minimalConfig+`slack_api_url = "`+v+`"`+"\n"))
+		if err != nil {
+			t.Fatalf("Load(%q): %v", v, err)
+		}
+		if cfg.SlackAPIURL != "http://127.0.0.1:9000/api/" {
+			t.Errorf("slack_api_url %q normalised to %q", v, cfg.SlackAPIURL)
+		}
+	}
+
+	if _, err := Load(writeConfig(t, minimalConfig+`slack_api_url = "/api/"`+"\n")); err == nil {
+		t.Error("expected an error for a relative slack_api_url")
+	}
+}
